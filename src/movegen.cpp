@@ -213,29 +213,17 @@ static inline void PseudoLegalKingMoves(Position* pos, int color, MoveList* list
         AddMove(encode_move(from, to, kingType, movetype), list);
     }
 
-    // Only generate castling moves if we are generating quiets
-    // Castling is illegal in check
+    // Only generate castling moves if we are generating quiets and the king is not in check.
     if (genQuiet && !pos->getCheckers()) {
         const Bitboard occ = pos->Occupancy(BOTH);
-        const int castlePerms = pos->getCastlingPerm();
-        if (color == WHITE) {
-            // king side castling is available
-            if ((castlePerms & WKCA) && !(occ & 0x6000000000000000ULL))
-                AddMove(encode_move(e1, g1, WK, Movetype::KSCastle), list);
-
-            // queen side castling is available
-            if ((castlePerms & WQCA) && !(occ & 0x0E00000000000000ULL))
-                AddMove(encode_move(e1, c1, WK, Movetype::QSCastle), list);
-        }
-        else {
-            // king side castling is available
-            if ((castlePerms & BKCA) && !(occ & 0x0000000000000060ULL))
-                AddMove(encode_move(e8, g8, BK, Movetype::KSCastle), list);
-
-            // queen side castling is available
-            if ((castlePerms & BQCA) && !(occ & 0x000000000000000EULL))
-                AddMove(encode_move(e8, c8, BK, Movetype::QSCastle), list);
-        }
+        const int kingSideRight = color == WHITE ? WKCA : BKCA;
+        const int queenSideRight = color == WHITE ? WQCA : BQCA;
+        const int kingTo = color == WHITE ? g1 : g8;
+        const int queenTo = color == WHITE ? c1 : c8;
+        if ((pos->getCastlingPerm() & kingSideRight) && !(occ & pos->getCastlingPath(kingSideRight)))
+            AddMove(encode_move(from, kingTo, kingType, Movetype::KSCastle), list);
+        if ((pos->getCastlingPerm() & queenSideRight) && !(occ & pos->getCastlingPath(queenSideRight)))
+            AddMove(encode_move(from, queenTo, kingType, Movetype::QSCastle), list);
     }
 }
 
@@ -341,7 +329,7 @@ bool IsPseudoLegal(Position* pos, Move move) {
     const int movedPiece = Piece(move);
     const int pieceType = GetPieceType(movedPiece);
 
-    if (from == to)
+    if (from == to && !isCastle(move))
         return false;
 
     if (movedPiece == EMPTY)
@@ -353,10 +341,10 @@ bool IsPseudoLegal(Position* pos, Move move) {
     if (Color[movedPiece] != pos->side)
         return false;
 
-    if ((1ULL << to) & pos->Occupancy(pos->side))
+    if (!isCastle(move) && ((1ULL << to) & pos->Occupancy(pos->side)))
         return false;
 
-    if ((!isCapture(move) || isEnpassant(move)) && pos->PieceOn(to) != EMPTY)
+    if (!isCastle(move) && (!isCapture(move) || isEnpassant(move)) && pos->PieceOn(to) != EMPTY)
         return false;
 
     if (isCapture(move) && !isEnpassant(move) && pos->PieceOn(to) == EMPTY)
@@ -461,24 +449,13 @@ bool IsPseudoLegal(Position* pos, Move move) {
                 if (pos->getCheckers())
                     return false;
 
-                if (std::abs(to - from) != 2)
-                    return false;
-
-                bool isKSCastle = GetMovetype(move) == static_cast<int>(Movetype::KSCastle);
-
-                Bitboard castleBlocked = pos->Occupancy(BOTH) & (pos->side == WHITE ? isKSCastle ? 0x6000000000000000ULL
-                                                                                                 : 0x0E00000000000000ULL
-                                                                                    : isKSCastle ? 0x0000000000000060ULL
-                                                                                                 : 0x000000000000000EULL);
-                int castleType = pos->side == WHITE ? isKSCastle ? WKCA
+                const bool isKSCastle = GetMovetype(move) == static_cast<int>(Movetype::KSCastle);
+                const int castleType = pos->side == WHITE ? isKSCastle ? WKCA
                                                                  : WQCA
                                                     : isKSCastle ? BKCA
                                                                  : BQCA;
-
-                if (!castleBlocked && (pos->getCastlingPerm() & castleType))
-                    return true;
-
-                return false;
+                return (pos->getCastlingPerm() & castleType)
+                    && !(pos->Occupancy(BOTH) & pos->getCastlingPath(castleType));
             }
             if (!(getKingAttacks(from) & (1ULL << to)))
                 return false;
@@ -511,15 +488,25 @@ bool IsLegal(Position* pos, Move move) {
         return isLegal;
     }
     else if (isCastle(move)) {
-        bool isKSCastle = GetMovetype(move) == static_cast<int>(Movetype::KSCastle);
-        if (isKSCastle) {
-            return    !IsSquareAttacked(pos, color == WHITE ? f1 : f8, color ^ 1)
-                   && !IsSquareAttacked(pos, color == WHITE ? g1 : g8, color ^ 1);
+        const bool isKSCastle = GetMovetype(move) == static_cast<int>(Movetype::KSCastle);
+        const int castleType = color == WHITE ? isKSCastle ? WKCA : WQCA : isKSCastle ? BKCA : BQCA;
+        const int rookFrom = pos->getCastlingRookSquare(castleType);
+        const int kingTo = To(move);
+        const int king = GetPiece(KING, color);
+        const int rook = GetPiece(ROOK, color);
+        const int step = kingTo > from ? 1 : kingTo < from ? -1 : 0;
+        const int firstKingSquare = step == 0 ? from : from + step;
+
+        // Evaluate king transit squares after vacating both castling origins.
+        ClearPiece(king, from, pos);
+        ClearPiece(rook, rookFrom, pos);
+        bool isLegal = true;
+        for (int square = firstKingSquare; square != kingTo + step && isLegal; square += step) {
+            isLegal = !IsSquareAttacked(pos, square, color ^ 1);
         }
-        else {
-            return    !IsSquareAttacked(pos, color == WHITE ? d1 : d8, color ^ 1)
-                   && !IsSquareAttacked(pos, color == WHITE ? c1 : c8, color ^ 1);
-        }
+        AddPiece(king, from, pos);
+        AddPiece(rook, rookFrom, pos);
+        return isLegal;
     }
 
     if (pieceType == KING) {

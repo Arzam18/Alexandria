@@ -34,8 +34,12 @@ Move ParseMove(const std::string& moveString, Position* pos) {
         // init move
         const Move move = moveList.moves[move_count].move;
         // make sure source & target squares are available within the generated move
+        const bool isChess960Castle = pos->isChess960() && isCastle(move)
+            && targetSquare == pos->getCastlingRookSquare(GetMovetype(move) == static_cast<int>(Movetype::KSCastle)
+                ? pos->side == WHITE ? WKCA : BKCA
+                : pos->side == WHITE ? WQCA : BQCA);
         if (sourceSquare == From(move) &&
-            targetSquare == To(move)) {
+            (targetSquare == To(move) || isChess960Castle)) {
             // promoted piece is available
             if (isPromo(move)) {
                 switch (getPromotedPiecetype(move)) {
@@ -69,11 +73,11 @@ Move ParseMove(const std::string& moveString, Position* pos) {
 }
 
 // parse UCI "position" command
-void ParsePosition(const std::string& command, Position* pos, std::vector<ZobristKey>& keyHistory) {
+void ParsePosition(const std::string& command, Position* pos, std::vector<ZobristKey>& keyHistory, const bool chess960) {
     // parse UCI "startpos" command
     if (command.find("startpos") != std::string::npos) {
         // init chess board with start position
-        ParseFen(start_position, pos);
+        ParseFen(start_position, pos, chess960);
         keyHistory.clear();
     }
 
@@ -83,12 +87,12 @@ void ParsePosition(const std::string& command, Position* pos, std::vector<Zobris
         if (command.find("fen") != std::string::npos) {
             // Substring from after "fen" up to "moves"
             std::string position = getPosition(command);
-            ParseFen(position, pos);
+            ParseFen(position, pos, chess960);
             keyHistory.clear();
         }
         else {
             // init chess board with start position
-            ParseFen(start_position, pos);
+            ParseFen(start_position, pos, chess960);
             keyHistory.clear();
         }
     }
@@ -105,7 +109,7 @@ void ParsePosition(const std::string& command, Position* pos, std::vector<Zobris
 }
 
 // parse UCI "go" command, returns true if we have to search afterwards and false otherwise
-bool ParseGo(const std::string& line, SearchInfo* info, Position* pos) {
+bool ParseGo(const std::string& line, SearchInfo* info, Position* pos, std::vector<ZobristKey>& keyHistory) {
     info->Reset();
     int depth = -1, movetime = -1;
     int movestogo;
@@ -113,15 +117,15 @@ bool ParseGo(const std::string& line, SearchInfo* info, Position* pos) {
 
     std::vector<std::string> tokens = split_command(line);
 
+    if (tokens.size() == 3 && tokens[1] == "perft") {
+        PerftTest(std::stoi(tokens[2]), pos, keyHistory);
+        return false;
+    }
+
     // loop over all the tokens and parse the commands
     for (size_t i = 1; i < tokens.size(); i++) {
         if (tokens.at(1) == "infinite") {
             ;
-        }
-
-        if (tokens.at(1) == "perft") {
-           std::cout << "perft support is currently broken, soz";
-            return false;
         }
 
         if (tokens.at(i) == "binc" && pos->side == BLACK) {
@@ -231,7 +235,7 @@ void UciLoop(int argc, char** argv) {
         // parse UCI "position" command
         if (tokens[0] == "position") {
             // call parse position function
-            ParsePosition(input, &td->pos, td->keyHistory);
+            ParsePosition(input, &td->pos, td->keyHistory, uciOptions.chess960);
             parsed_position = true;
         }
 
@@ -246,10 +250,10 @@ void UciLoop(int argc, char** argv) {
 #endif
 
             if (!parsed_position) { // call parse position function
-                ParsePosition("position startpos", &td->pos, td->keyHistory);
+                ParsePosition("position startpos", &td->pos, td->keyHistory, uciOptions.chess960);
             }
             // call parse go function
-            bool search = ParseGo(input, &td->info, &td->pos);
+            bool search = ParseGo(input, &td->info, &td->pos, td->keyHistory);
             // Start search in a separate thread
             if (search) {
                 threads_state = Search;
@@ -275,6 +279,9 @@ void UciLoop(int argc, char** argv) {
             else if (tokens.at(2) == "Minimal") {
                 auto value = tokens.at(4) == "true";
                 uciOptions.shortUci = value;
+            }
+            else if (tokens.at(2) == "UCI_Chess960") {
+                uciOptions.chess960 = tokens.at(4) == "true";
             }
 
 #ifdef TUNE
@@ -344,6 +351,7 @@ void UciLoop(int argc, char** argv) {
             std::cout << "option name Hash type spin default 16 min 1 max 262144 \n";
             std::cout << "option name Threads type spin default 1 min 1 max 256 \n";
             std::cout << "option name Minimal type check default false \n";
+            std::cout << "option name UCI_Chess960 type check default false \n";
 #ifdef TUNE
             // spsa info dump
             for (const auto &param: tunables()) {
@@ -362,7 +370,7 @@ void UciLoop(int argc, char** argv) {
 
         else if (input == "eval") {// call parse position function
             if (!parsed_position) {
-                ParsePosition("position startpos", &td->pos, td->keyHistory);
+                ParsePosition("position startpos", &td->pos, td->keyHistory, uciOptions.chess960);
             }
             std::cout << "Raw eval: " << EvalPositionRaw(&td->pos, &td->FTable) << std::endl;
 

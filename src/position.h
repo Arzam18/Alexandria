@@ -61,6 +61,11 @@ public:
     int side = -1; // what side has to move
     // stores the state of the board  rollback purposes
     historyStack history;
+    // Immutable for a parsed game, so do not copy it with every search ply.
+    int castleRookSquares[4] = {h1, a1, h8, a8};
+    bool chess960 = false;
+    uint8_t castlingRightsMask[64] = {};
+    Bitboard castlingPath[4] = {};
 
     [[nodiscard]] inline BoardState& state()  {
        return history.boardStateHistory[history.head];
@@ -104,6 +109,30 @@ public:
         return state().castlePerm;
     }
 
+    [[nodiscard]] inline int getCastlingRookSquare(const int castleRight) const {
+        switch (castleRight) {
+        case WKCA: return castleRookSquares[0];
+        case WQCA: return castleRookSquares[1];
+        case BKCA: return castleRookSquares[2];
+        case BQCA: return castleRookSquares[3];
+        default: assert(false); return no_sq;
+        }
+    }
+
+    [[nodiscard]] inline Bitboard getCastlingPath(const int castleRight) const {
+        switch (castleRight) {
+        case WKCA: return castlingPath[0];
+        case WQCA: return castlingPath[1];
+        case BKCA: return castlingPath[2];
+        case BQCA: return castlingPath[3];
+        default: assert(false); return 0ULL;
+        }
+    }
+
+    [[nodiscard]] inline bool isChess960() const {
+        return chess960;
+    }
+
     [[nodiscard]] inline int getEpSquare() const {
         return state().enPas;
     }
@@ -127,18 +156,6 @@ public:
 
 extern Bitboard SQUARES_BETWEEN_BB[64][64];
 
-// castling rights update constants
-constexpr int castling_rights[64] = {
-     7, 15, 15, 15,  3, 15, 15, 11,
-    15, 15, 15, 15, 15, 15, 15, 15,
-    15, 15, 15, 15, 15, 15, 15, 15,
-    15, 15, 15, 15, 15, 15, 15, 15,
-    15, 15, 15, 15, 15, 15, 15, 15,
-    15, 15, 15, 15, 15, 15, 15, 15,
-    15, 15, 15, 15, 15, 15, 15, 15,
-    13, 15, 15, 15, 12, 15, 15, 14,
-};
-
 // convert squares to coordinates
 const constexpr char* square_to_coordinates[] = {
     "a8", "b8", "c8", "d8", "e8", "f8", "g8", "h8",
@@ -157,7 +174,7 @@ constexpr char ascii_pieces[13] = "PNBRQKpnbrqk";
 [[nodiscard]] ZobristKey GeneratePosKey(const Position* pos);
 [[nodiscard]] ZobristKey GeneratePawnKey(const Position* pos);
 // parse FEN string
-void ParseFen(const std::string& command, Position* pos);
+void ParseFen(const std::string& command, Position* pos, bool chess960 = false);
 // Get fen string from board
 [[nodiscard]] std::string GetFen(const Position* pos);
 // Parse a string of moves in coordinate format and plays them
