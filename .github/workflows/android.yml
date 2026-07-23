@@ -46,7 +46,7 @@ jobs:
           make build=arm64 \
                CXX=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++ \
                NATIVE="-march=armv8-a" \
-               CXXFLAGS="-funroll-loops -O3 -fno-exceptions -std=c++2b -DNDEBUG --target=aarch64-linux-android28" \
+               CXXFLAGS="-funroll-loops -O3 -fno-exceptions -std=c++2b -DNDEBUG -DEVALFILE=\\\"processed.net\\\" --target=aarch64-linux-android28" \
                Alexandria
 
       - name: List build output
