@@ -26,6 +26,11 @@ jobs:
         run: |
           sed -i 's/-march=native -E -dM -/-E -dM -/' makefile
 
+      - name: Patch nnue.h for constexpr round
+        run: |
+          sed -i '/#pragma once/a \\nconstexpr double constexpr_round(double x) { return x >= 0.0 ? (double)(long long)(x + 0.5) : (double)(long long)(x - 0.5); }' src/nnue.h
+          sed -i 's/std::round(/constexpr_round(/g' src/nnue.h
+
       - name: Build
         run: |
           make build=arm64 \
