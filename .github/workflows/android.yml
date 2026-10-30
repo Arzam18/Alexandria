@@ -19,7 +19,7 @@ concurrency:
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
 
     steps:
       - name: Checkout Alexandria
@@ -43,12 +43,21 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "Building Alexandria $VERSION"
 
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl unzip jq g++ make file
+
       - name: Install Android NDK
         shell: bash
         run: |
           set -euo pipefail
 
-          NDK_VERSION=r27c
+          NDK_VERSION=r26d
+
           curl --fail --location --retry 3 \
             "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" \
             -o ndk.zip
@@ -56,54 +65,81 @@ jobs:
           unzip -q ndk.zip
           echo "ANDROID_NDK_HOME=$PWD/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
 
-      - name: Download and verify NNUE network
+      - name: Find the exact matching NNUE network
         shell: bash
         run: |
           set -euo pipefail
 
-          URL="https://github.com/PGG106/Alexandria-networks/releases/latest/download/nn.net"
-
-          curl --fail --location --retry 5 --retry-all-errors \
-            --connect-timeout 30 \
-            "$URL" -o nn.net
-
-          test -s nn.net
-
-          SIZE="$(stat -c '%s' nn.net)"
-          EXPECTED_SIZE=157159968
-
-          echo "Downloaded network size: $SIZE bytes"
-          echo "Expected minimum size: $EXPECTED_SIZE bytes"
-
-          if (( SIZE < EXPECTED_SIZE )); then
-            echo "::error::Network is incomplete or incompatible: $SIZE bytes"
-            exit 1
-          fi
-
-          if [[ ! -s net-hash.txt ]]; then
-            echo "::error::net-hash.txt is missing or empty"
-            exit 1
-          fi
+          test -s net-hash.txt
 
           EXPECTED_HASH="$(tr -d '[:space:]' < net-hash.txt)"
-          ACTUAL_HASH="$(sha256sum nn.net | awk '{print $1}')"
+          EXPECTED_HASH="${EXPECTED_HASH^^}"
 
-          echo "Expected SHA-256: $EXPECTED_HASH"
-          echo "Actual SHA-256:   $ACTUAL_HASH"
-
-          if [[ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]]; then
-            echo "::error::Downloaded network does not match this Alexandria source revision."
-            echo "::error::Use the exact network associated with net-hash.txt."
+          if [[ ! "$EXPECTED_HASH" =~ ^[0-9A-F]{64}$ ]]; then
+            echo "::error::net-hash.txt does not contain a valid SHA-256 hash"
             exit 1
           fi
 
-          echo "Network verification passed."
+          echo "Required network SHA-256: $EXPECTED_HASH"
+
+          API="https://api.github.com/repos/PGG106/Alexandria-networks/releases?per_page=100"
+
+          curl --fail --location --retry 5 \
+            -H "Accept: application/vnd.github+json" \
+            "$API" -o releases.json
+
+          MATCHED=false
+
+          while IFS=$'\t' read -r TAG URL; do
+            [[ -n "$URL" ]] || continue
+
+            echo "Checking network release: $TAG"
+
+            if ! curl --fail --location --silent --show-error \
+              --retry 2 "$URL" -o candidate.nnue; then
+              echo "Download failed for $TAG; trying next release."
+              continue
+            fi
+
+            ACTUAL_HASH="$(sha256sum candidate.nnue | awk '{print toupper($1)}')"
+            SIZE="$(stat -c '%s' candidate.nnue)"
+
+            echo "Release: $TAG"
+            echo "Size: $SIZE bytes"
+            echo "SHA-256: $ACTUAL_HASH"
+
+            if [[ "$ACTUAL_HASH" == "$EXPECTED_HASH" ]]; then
+              mv candidate.nnue nn.net
+              echo "Matched network release: $TAG"
+              MATCHED=true
+              break
+            fi
+
+            rm -f candidate.nnue
+          done < <(
+            jq -r '
+              .[]
+              | .tag_name as $tag
+              | .assets[]
+              | select(.name == "nn.net")
+              | [$tag, .browser_download_url]
+              | @tsv
+            ' releases.json
+          )
+
+          if [[ "$MATCHED" != true ]]; then
+            echo "::error::No nn.net asset among the first 100 releases matches net-hash.txt."
+            echo "::error::Do not bypass the hash check. Check the network release history and asset filenames."
+            exit 1
+          fi
+
+          test -s nn.net
+          sha256sum nn.net
 
       - name: Patch Makefile for Android cross-compilation
         shell: bash
         run: |
           set -euo pipefail
-
           sed -i 's/-march=native -E -dM -/-E -dM -/' makefile
 
       - name: Patch constexpr rounding for Clang
@@ -121,11 +157,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          make -C tools clean
-          make -C tools \
-            CXX=g++ \
-            CXXFLAGS="-funroll-loops -O3 -std=c++23 -DNDEBUG" \
-            NATIVE=
+          g++ -funroll-loops -O3 -fno-exceptions \
+            -std=c++23 -DNDEBUG \
+            -o tools/preprocess tools/preprocess.cpp -pthread
 
           test -x tools/preprocess
 
@@ -135,13 +169,13 @@ jobs:
           set -euo pipefail
 
           rm -f processed.net
+
           ./tools/preprocess nn.net processed.net
 
           test -s processed.net
-          echo "Preprocessed network:"
           stat -c '%n: %s bytes' processed.net
 
-      - name: Build Android ARM64
+      - name: Build Alexandria ARM64 v8-A
         shell: bash
         run: |
           set -euo pipefail
@@ -156,7 +190,7 @@ jobs:
 
           mv Alexandria "Alexandria-${VERSION}-android-arm64-v8a"
 
-      - name: Build Android ARM64 DotProd
+      - name: Build Alexandria ARM64 DotProd
         shell: bash
         run: |
           set -euo pipefail
@@ -178,10 +212,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          for FILE in Alexandria-"${VERSION}"-android-*; do
-            test -s "$FILE"
-            file "$FILE"
-            ls -lh "$FILE"
+          for BIN in Alexandria-"${VERSION}"-android-*; do
+            test -s "$BIN"
+            file "$BIN"
+            ls -lh "$BIN"
           done
 
       - name: Upload artifacts
